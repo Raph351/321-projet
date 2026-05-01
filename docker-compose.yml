@@ -1,0 +1,106 @@
+services:
+
+  # ─── API Gateway ──────────────────────────────────────────────────────────
+  traefik:
+    image: traefik:v2.11
+    container_name: traefik
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--log.level=INFO"
+    ports:
+      - "80:80"       # API Gateway (all services routed here)
+      - "8888:8080"   # Traefik Dashboard
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - library-net
+    restart: unless-stopped
+
+  # ─── Message Broker ───────────────────────────────────────────────────────
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    ports:
+      - "15672:15672"   # RabbitMQ Management UI
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - library-net
+    restart: unless-stopped
+
+  # ─── Service 1 : Book Catalog (Python / FastAPI) ──────────────────────────
+  book-catalog:
+    build: ./book-catalog
+    container_name: book-catalog
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+    ports:
+      - "8001:8001"   # Direct access — Swagger UI at http://localhost:8001/docs
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - book-data:/data
+    labels:
+      - "traefik.enable=true"
+      # Route /books and /books/* through the gateway
+      - "traefik.http.routers.book-catalog.rule=PathPrefix(`/books`)"
+      - "traefik.http.routers.book-catalog.entrypoints=web"
+      - "traefik.http.services.book-catalog.loadbalancer.server.port=8001"
+      # Route /book-docs to Swagger UI
+      - "traefik.http.routers.book-docs.rule=PathPrefix(`/book-docs`)"
+      - "traefik.http.routers.book-docs.entrypoints=web"
+      - "traefik.http.routers.book-docs.middlewares=book-docs-strip"
+      - "traefik.http.middlewares.book-docs-strip.stripprefix.prefixes=/book-docs"
+      - "traefik.http.routers.book-docs.service=book-catalog"
+    networks:
+      - library-net
+    restart: unless-stopped
+
+  # ─── Service 2 : Loan Service (Node.js / Express) ─────────────────────────
+  loan-service:
+    build: ./loan-service
+    container_name: loan-service
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      BOOK_CATALOG_URL: http://book-catalog:8001
+    ports:
+      - "8002:8002"   # Direct access — Swagger UI at http://localhost:8002/api-docs
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - loan-data:/data
+    labels:
+      - "traefik.enable=true"
+      # Route /loans and /loans/* through the gateway
+      - "traefik.http.routers.loan-service.rule=PathPrefix(`/loans`)"
+      - "traefik.http.routers.loan-service.entrypoints=web"
+      - "traefik.http.services.loan-service.loadbalancer.server.port=8002"
+      # Route /loan-docs to Swagger UI
+      - "traefik.http.routers.loan-docs.rule=PathPrefix(`/loan-docs`)"
+      - "traefik.http.routers.loan-docs.entrypoints=web"
+      - "traefik.http.routers.loan-docs.middlewares=loan-docs-strip"
+      - "traefik.http.middlewares.loan-docs-strip.stripprefix.prefixes=/loan-docs"
+      - "traefik.http.routers.loan-docs.service=loan-service"
+    networks:
+      - library-net
+    restart: unless-stopped
+
+networks:
+  library-net:
+    driver: bridge
+
+volumes:
+  book-data:
+  loan-data:

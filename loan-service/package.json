@@ -1,0 +1,17 @@
+{
+  "name": "loan-service",
+  "version": "1.0.0",
+  "description": "Library Loan Microservice — Node.js/Express",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js"
+  },
+  "dependencies": {
+    "amqplib": "^0.10.4",
+    "axios": "^1.7.2",
+    "better-sqlite3": "^9.6.0",
+    "express": "^4.19.2",
+    "swagger-jsdoc": "^6.2.8",
+    "swagger-ui-express": "^5.0.1"
+  }
+}

@@ -1,0 +1,135 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Docker Swarm Stack — Library Microservices
+#
+# Prerequisites:
+#   1. Build and tag images on the manager node BEFORE deploying:
+#        docker build -t library-ms/book-catalog:latest ./book-catalog
+#        docker build -t library-ms/loan-service:latest  ./loan-service
+#
+#   2. Init Swarm (if not already):
+#        docker swarm init
+#
+#   3. Deploy:
+#        docker stack deploy -c docker-stack.yml library
+#
+#   4. Check services:
+#        docker stack services library
+#        docker service logs library_book-catalog
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ─── Traefik API Gateway ──────────────────────────────────────────────────
+  traefik:
+    image: traefik:v2.11
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.swarmMode=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--log.level=INFO"
+    ports:
+      - "80:80"
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - library-net
+    deploy:
+      mode: global   # One Traefik per Swarm node
+      placement:
+        constraints:
+          - node.role == manager
+
+  # ─── Swarm Visualizer ─────────────────────────────────────────────────────
+  visualizer:
+    image: dockersamples/visualizer:stable
+    ports:
+      - "9000:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - library-net
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+
+  # ─── RabbitMQ Message Broker ──────────────────────────────────────────────
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    ports:
+      - "15672:15672"
+    networks:
+      - library-net
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 5
+      placement:
+        constraints:
+          - node.role == manager
+
+  # ─── Service 1 : Book Catalog (Python / FastAPI) ──────────────────────────
+  book-catalog:
+    image: library-ms/book-catalog:latest
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+    volumes:
+      - book-data:/data
+    networks:
+      - library-net
+    deploy:
+      replicas: 2
+      update_config:
+        parallelism: 1
+        delay: 10s
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 5
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.book-catalog.rule=PathPrefix(`/books`)"
+        - "traefik.http.routers.book-catalog.entrypoints=web"
+        - "traefik.http.services.book-catalog.loadbalancer.server.port=8001"
+
+  # ─── Service 2 : Loan Service (Node.js / Express) ─────────────────────────
+  loan-service:
+    image: library-ms/loan-service:latest
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      BOOK_CATALOG_URL: http://book-catalog:8001
+    volumes:
+      - loan-data:/data
+    networks:
+      - library-net
+    deploy:
+      replicas: 2
+      update_config:
+        parallelism: 1
+        delay: 10s
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 5
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.loan-service.rule=PathPrefix(`/loans`)"
+        - "traefik.http.routers.loan-service.entrypoints=web"
+        - "traefik.http.services.loan-service.loadbalancer.server.port=8002"
+
+networks:
+  library-net:
+    driver: overlay
+    attachable: true
+
+volumes:
+  book-data:
+  loan-data:
